@@ -1,5 +1,6 @@
 import bmesh
 import logging
+import os
 from .shared import * # for brevity use star import, also imports modules
 
 logging.basicConfig(style="{", level=logging.WARNING)
@@ -26,6 +27,14 @@ class Vert:
 		self.nof_weights  = int(mobj.group(5))
 		self.bmv = None
 
+		#fmt = "\tvert {index:d} {uv:s} {fwi:d} {nof_weights:d}\n"
+		#print(fmt.format(
+		#	index = self.index,
+		#	uv = "( "+nums(self.uv.x)+" "+nums(self.uv.y)+" )",
+		#	fwi = self.fwi,
+		#	nof_weights = self.nof_weights
+		#))
+
 		self.uv.y = 1.0 - self.uv.y
 
 	def get_weights(self, weights):
@@ -41,7 +50,7 @@ class Vert:
 
 		stream.write(fmt.format(
 			index = self.index,
-			uv = fmt_row2f.format(*self.uv),
+			uv = "( "+nums(self.uv.x)+" "+nums(self.uv.y)+" )",
 			fwi = self.fwi,
 			nof_weights = self.nof_weights
 		))
@@ -58,22 +67,30 @@ class Weight:
 			self.offset = None
 
 	def from_mobj(self, mobj):
+		self.index = int(mobj.group(1))
 		self.joint_index = int(mobj.group(2))
 		self.value = float(mobj.group(3))
 		self.offset = unpack_tuple(mobj, 4, 6)
+		#fmt = "\tweight {index:d} {joint_index:d} {value} {offset:s}\n"
+		#print(fmt.format(
+		#	index = self.index,
+		#	joint_index = self.joint_index,
+		#	value = self.value,
+		#	offset = "( "+nums(self.offset.x)+" "+nums(self.offset.y)+" "+nums(self.offset.z)+" )"
+		#))
 
 	def serialize(self, stream):
-		fmt = "\tweight {index:d} {joint_index:d} {value:.6f} {offset:s}\n"
+		fmt = "\tweight {index:d} {joint_index:d} {value} {offset:s}\n"
 		stream.write(fmt.format(
 			index = self.index,
 			joint_index = self.joint_index,
-			value = self.value,
-			offset = fmt_row3f.format(*self.offset)
+			value = nums(self.value),
+			offset = "( "+numr(self.offset.x)+" "+numr(self.offset.y)+" "+numr(self.offset.z)+" )"
 		))
 
 
 class Mesh:
-	def __init__(self, mesh_obj):
+	def __init__(self, mesh_obj, arm_obj):
 		mesh = mesh_obj.data
 
 		self.mesh_obj = mesh_obj
@@ -83,6 +100,11 @@ class Mesh:
 
 		self.bm = bmesh.new()
 		self.bm.from_mesh(mesh)
+		# Carl: When we import an MD5, the meshes are children of the armature.
+		# We want to export the MD5 with the rotations and positions of the meshes
+		# preserved relative to the armature.
+		if mesh_obj.parent == arm_obj:
+			self.bm.transform(mesh_obj.matrix_local)
 		self.process_for_export()
 		self.bm.verts.index_update()
 		self.tris = [[v.index for v in f.verts]
@@ -176,9 +198,10 @@ class Mesh:
 
 	def serialize(self, stream):
 		stream.write("\nmesh {\n")
-		stream.write("\t// meshes: %s\n"   % self.mesh_obj.name)
-		stream.write("\n\tshader \"%s\"\n" % self.shader)
-		stream.write("\n\tnumverts %d\n"   % len(self.verts))
+		stream.write("\t// meshes: %s\n"   % self.mesh_obj.name) # Sauerbraten allegedly reads this field, as do Blender importers
+		stream.write("\tname \"%s\"\n"   % self.mesh_obj.name) # Doom 3 reads this field if present, Sauerbraten ignores it. Mesh files don't normally contain it.
+		stream.write("\tshader \"%s\"\n" % self.shader) # This field MUST be present or Doom 3 won't load the mesh!
+		stream.write("\n\tnumverts %d\n"   % len(self.verts)) # MUST be present, must be >= 0 and must be accurate
 
 		for vert in self.verts:
 			vert.serialize(stream)
@@ -217,8 +240,8 @@ class Joint:
 		stream.write(fmt.format(
 			name   = self.name,
 			pindex = self.parent_index,
-			loc    = fmt_row3f.format(*self.loc),
-			rot    = fmt_row3f.format(*self.rot[1:]),
+			loc = "( "+nums(self.loc.x)+" "+nums(self.loc.y)+" "+nums(self.loc.z)+" )",
+			rot = "( "+nums(self.rot[1])+" "+nums(self.rot[2])+" "+nums(self.rot[3])+" )",
 			pname  = self.parent_name
 		))
 
@@ -243,12 +266,14 @@ class Joint:
 
 def read_md5mesh(filepath):
 	t_Int   = r"(-?\d+)"
-	t_Float = r"(-?\d+\.\d+)"
+	t_Float = r"([+-]?\d+\.?\d*[eE]?[+-]?\d*)"
 	t_Word  = r"(\S+)"
-	t_QuotedString = '"([^"]*)"' # does not allow escaping \"
+	t_QuotedString = '"([^"]*)"' # Doom 3 does not allow escaping \"
+	t_token = r"(?:\"([^\"]*)\"|'([^']*)'|([a-zA-Z_/\\][a-zA-Z_0-9:/\\.]*|0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9]*[.][0-9]*(?:e[-+]?[0-9]*|#(?:INF|IND|NAN|QNAN|SNAN|NaN)|[0-9.]*)|0[0-7]+|[0-9]+|[~`!@#$%^&*()-=+|{}\[\];:,<>?]))"
 	t_Tuple2f = "\\s+".join(("\\(", t_Float, t_Float, "\\)"))
 	t_Tuple3f = "\\s+".join(("\\(", t_Float, t_Float, t_Float, "\\)"))
 
+	re_commandline = construct("commandline", t_QuotedString)
 	re_joint  = construct(t_QuotedString, t_Int, t_Tuple3f, t_Tuple3f)
 	re_vert   = construct("vert", t_Int, t_Tuple2f, t_Int, t_Int)
 	re_tri    = construct("tri", t_Int, t_Int, t_Int, t_Int)
@@ -257,17 +282,23 @@ def read_md5mesh(filepath):
 	re_joints = construct("joints", "\\{")
 	re_nverts = construct("numverts", t_Int)
 	re_mesh   = construct("mesh", "\\{")
-	re_shader = construct("shader", t_QuotedString)
+	re_shader = construct("shader", t_token)
 	re_mesh_label = construct(".*?// meshes: (.*)$") # comment, used by sauerbraten
+	re_name   = construct("name", t_token) # name, used by Doom 3
 
 	with open(filepath, "r") as fobj:
 		lines = iter(fobj.readlines())
 
-	skip_until(re_joints, lines)
+	commandlines = gather(re_commandline, re_joints, lines)
+	commandline = commandlines[0].group(1) if len(commandlines) > 0 else ""
 
-	arm_obj, matrices = do_joints(lines, re_joint, re_end)
+	filename, file_extension = os.path.splitext(os.path.basename(filepath))
+
+	arm_obj, matrices = do_joints(lines, re_joint, re_end, filename)
+	arm_obj['commandline'] = commandline # save commandline in a c
+
 	results = []
-	reg_exprs = re_shader, re_vert, re_tri, re_weight, re_end, re_nverts, re_mesh_label
+	reg_exprs = re_shader, re_vert, re_tri, re_weight, re_end, re_nverts, re_mesh_label, re_name
 	n = 0
 
 	while True:
@@ -296,18 +327,25 @@ def read_md5mesh(filepath):
 
 		bpy.context.scene.objects.link(mesh_obj)
 
-		mat_name = label
+		mat_name = shader # was label
 		mat = (bpy.data.materials.get(mat_name) or
 			   bpy.data.materials.new(mat_name))
 		mesh.materials.append(mat)
+		# todo add texture
+		# search order:
+		#   path + filename.tga
+		#   base + mat_name + .tga
+		#   path + filename(mat_name) + .tga
+		#   base + filepath(mat_name) + filename.tga
+		
 
 	return arm_obj
 
-def do_joints(lines, re_joint, re_end):
+def do_joints(lines, re_joint, re_end, filename):
 	joints = gather(re_joint, re_end, lines)
 
 	arm = bpy.data.armatures.new("MD5")
-	arm_obj = bpy.data.objects.new("MD5", arm)
+	arm_obj = bpy.data.objects.new(filename, arm)
 	arm_obj.select = True
 	bpy.context.scene.objects.link(arm_obj)
 	bpy.context.scene.objects.active = arm_obj
@@ -358,11 +396,26 @@ def do_mesh(lines, reg_exprs, matrices):
 	 re_weight,
 	 re_end,
 	 re_nverts,
-	 re_label) = reg_exprs
+	 re_label,
+	 re_name) = reg_exprs
 
-	mobjs__label, mobjs_shader = gather_multi([re_label, re_shader], re_nverts, lines)
+	mobjs__label, mobjs___name, mobjs_shader = gather_multi([re_label, re_name, re_shader], re_nverts, lines)
 	label  = mobjs__label[0].group(1) if len(mobjs__label) > 0 else "md5mesh"
-	shader = mobjs_shader[0].group(1) if len(mobjs_shader) > 0 else ""
+	if len(mobjs___name) > 0:
+		if mobjs___name[0].group(1) is not None:
+			label = mobjs___name[0].group(1)
+		if mobjs___name[0].group(2) is not None:
+			label = mobjs___name[0].group(2)
+		if mobjs___name[0].group(3) is not None:
+			label = mobjs___name[0].group(3)
+	shader = ""
+	if len(mobjs_shader) > 0:
+		if mobjs_shader[0].group(1) is not None:
+			shader = mobjs_shader[0].group(1)
+		if mobjs_shader[0].group(2) is not None:
+			shader = mobjs_shader[0].group(2)
+		if mobjs_shader[0].group(3) is not None:
+			shader = mobjs_shader[0].group(3)
 
 	verts, tris, weights = gather_multi(
 		[re_vert, re_tri, re_weight],
@@ -421,7 +474,7 @@ def write_md5mesh(filepath, scene, arm_obj):
 	for mesh_obj in filter(is_mesh_object, scene.objects):
 		if (on_active_layer(scene, mesh_obj) and
 			has_armature_modifier(mesh_obj, arm_obj)):
-			meshes.append(Mesh(mesh_obj))
+			meshes.append(Mesh(mesh_obj, arm_obj))
 
 	bones = arm_obj.data.bones
 	joints = [Joint() for i in range(len(bones))]
@@ -436,7 +489,11 @@ def write_md5mesh(filepath, scene, arm_obj):
 
 	with open(filepath, "w") as stream:
 		stream.write("MD5Version 10\n")
-		stream.write("commandline \"\"\n\n")
+
+		commandline = arm_obj.get("commandline")
+		if commandline is None:
+			commandline = ""
+		stream.write("commandline \"%s\"\n\n" % (commandline)) # MUST be present for Doom 3
 
 		stream.write("numJoints %d\n" % len(joints))
 		stream.write("numMeshes %d\n" % len(meshes))

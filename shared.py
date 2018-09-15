@@ -3,8 +3,20 @@ import math
 import bpy
 from mathutils import Vector, Matrix, Quaternion
 
-fmt_row2f = "( {:.6f} {:.6f} )"
-fmt_row3f = "( {:.6f} {:.6f} {:.6f} )"
+fmt_row2f = "( {} {} )"
+fmt_row3f = "( {} {} {} )"
+
+def nums(x):
+	if x == int(x):
+		return "%d" % (int(x)) # if it's an integer, return it as an integer
+	else:
+		return ("%.6f" % (x)).rstrip("0") # remove trailing zeroes, should be %.10f
+
+def numr(x):
+	if abs(x - int(x)) < 0.0000005:
+		return "%d" % (int(x)) # rounding errors have lead to integers no longer being integers
+	else:
+		return ("%.6f" % (x)).rstrip("0") # remove trailing zeroes, should be %.10f
 
 def construct(*args):
 	return re.compile("\s*" + "\s+".join(args))

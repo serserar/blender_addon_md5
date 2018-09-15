@@ -52,8 +52,8 @@ custom property and export the new md5mesh and all of its animations.
 Notes:
 ======
 
-* For now, the addon has only been tested with blender version 2.77a and models of the game 
-  Cube 2: Sauerbraten, which this addon was indented for.
+* For now, the addon has only been tested with blender version 2.79b and models of the game 
+  Doom 3. Previous versions were tested on Cube 2: Sauerbraten, which this addon was indented for.
 
 * This addon originated from the `md5 addon`_ written by Nemyax.
 
@@ -64,6 +64,8 @@ Notes:
   The addon will try to split the mesh along the borders of the uv islands so
   that each vertex can be assigned multiple uv coordinates if necessary.
   This will increase the vertex count of your model.
+  
+  If you want to use the model in Blender, you may want to remove duplicates after importing.
 
 * The weights of your mesh should be normalized, which means for each vertice
   the sum of its weights should equal 1.0
@@ -72,6 +74,6 @@ Notes:
   the location vectors and rotation quaternions, the addon will always export all
   components using mask 63. 
 
-.. _zip-archive: https://github.com/pink-vertex/blender_addon_md5/archive/Release.zip
+.. _zip-archive: https://github.com/carlkenner/blender_addon_md5/archive/Release.zip
 .. _id tech 4: https://github.com/id-Software/DOOM-3 
 .. _md5 addon: https://sourceforge.net/p/blenderbitsbobs/wiki/MD5%20exporter/

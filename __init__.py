@@ -18,13 +18,13 @@
 
 bl_info = {
 	"name": "Id Tech 4 md5mesh and md5anim format",
-	"author": "pink vertex",
-	"version": (0, 1),
+	"author": "pink vertex, Carl Kenner",
+	"version": (0, 2),
 	"blender": (2, 77, 0),
 	"location": "File -> Import-Export",
 	"description": "Import-Export *.md5mesh and *.md5anim files",
 	"warning": "",
-	"wiki_url": "",
+	"wiki_url": "https://github.com/CarlKenner/blender_addon_md5",
 	"category": "Import-Export",
 	}
 
