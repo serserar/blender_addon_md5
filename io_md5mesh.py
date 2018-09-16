@@ -1,6 +1,7 @@
 import bmesh
 import logging
 import os
+import mathutils
 from .shared import * # for brevity use star import, also imports modules
 
 logging.basicConfig(style="{", level=logging.WARNING)
@@ -270,10 +271,14 @@ def read_md5mesh(filepath):
 	t_Word  = r"(\S+)"
 	t_QuotedString = '"([^"]*)"' # Doom 3 does not allow escaping \"
 	t_token = r"(?:\"([^\"]*)\"|'([^']*)'|([a-zA-Z_/\\][a-zA-Z_0-9:/\\.]*|0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9]*[.][0-9]*(?:e[-+]?[0-9]*|#(?:INF|IND|NAN|QNAN|SNAN|NaN)|[0-9.]*)|0[0-7]+|[0-9]+|[~`!@#$%^&*()-=+|{}\[\];:,<>?]))"
-	t_Tuple2f = "\\s+".join(("\\(", t_Float, t_Float, "\\)"))
-	t_Tuple3f = "\\s+".join(("\\(", t_Float, t_Float, t_Float, "\\)"))
+	#t_Tuple2f = "\\s+".join(("\\(?", t_Float, t_Float, "\\)?"))
+	#t_Tuple3f = "\\s+".join(("\\(?", t_Float, t_Float, t_Float, "\\)?"))
+	t_Tuple2f = r"[(]?\s*" + (t_Float + r"\s+") + t_Float + r"\s*[)]?"
+	t_Tuple3f = r"[(]?\s*" + (t_Float + r"\s+") * 2 + t_Float + r"\s*[)]?"
+	t_Tuple9f = r"[(]?\s*" + (t_Float + r"\s+") * 8 + t_Float + r"\s*[)]?"
 
 	re_commandline = construct("commandline", t_QuotedString)
+
 	re_joint  = construct(t_QuotedString, t_Int, t_Tuple3f, t_Tuple3f)
 	re_vert   = construct("vert", t_Int, t_Tuple2f, t_Int, t_Int)
 	re_tri    = construct("tri", t_Int, t_Int, t_Int, t_Int)
@@ -281,20 +286,52 @@ def read_md5mesh(filepath):
 	re_end    = construct("\\}")
 	re_joints = construct("joints", "\\{")
 	re_nverts = construct("numverts", t_Int)
-	re_mesh   = construct("mesh", "\\{")
+	re_mesh   = construct(r"mesh(?:\s+" + t_Int + r")?\s*\{")
 	re_shader = construct("shader", t_token)
 	re_mesh_label = construct(".*?// meshes: (.*)$") # comment, used by sauerbraten
-	re_name   = construct("name", t_token) # name, used by Doom 3
+
+	re_nbones = construct("numbones", t_Int)
+	re_bone   = construct("bone", t_Int, r"\{")
+	re_name   = construct("name", t_token)
+	re_parent_name = construct("parent", t_token)
+	re_bindpos = construct("bindpos", t_Tuple3f)
+	re_bindmat = construct("bindmat", t_Tuple9f)
+	re_nmeshes = construct("nummeshes", t_Int)
 
 	with open(filepath, "r") as fobj:
 		lines = iter(fobj.readlines())
 
-	commandlines = gather(re_commandline, re_joints, lines)
-	commandline = commandlines[0].group(1) if len(commandlines) > 0 else ""
-
 	filename, file_extension = os.path.splitext(os.path.basename(filepath))
 
-	arm_obj, matrices = do_joints(lines, re_joint, re_end, filename)
+	commandline = ""
+	numbones = -1
+	nummeshes = 0
+	for line in lines:
+		# stop when if get to the start of the joints
+		mobj = re_joints.match(line)
+		if mobj:
+			break
+		# In Doom 3 alpha, nummeshes marks the end of the bones (which it has instead of joints)
+		mobj = re_nmeshes.match(line)
+		if mobj:
+			nummeshes = int(mobj.group(1))
+			if numbones > -1:
+				break
+			else:
+				continue
+		mobj = re_commandline.match(line)
+		if mobj:
+			commandline = mobj.group(1)
+			continue
+		mobj = re_nbones.match(line)
+		if mobj:
+			numbones = int(mobj.group(1))
+			reg_exprs = re_bone, re_name, re_bindpos, re_bindmat, re_parent_name, re_end, re_nmeshes
+			arm_obj, matrices = do_bones(lines, reg_exprs, filename)
+			break
+
+	if numbones == -1:
+		arm_obj, matrices = do_joints(lines, re_joint, re_end, filename)
 	arm_obj['commandline'] = commandline # save commandline in a c
 
 	results = []
@@ -327,16 +364,37 @@ def read_md5mesh(filepath):
 
 		bpy.context.scene.objects.link(mesh_obj)
 
-		mat_name = shader # was label
+		# apply texture in Blender Render
+		mat_name = get_doom3_shader_name(shader)
 		mat = (bpy.data.materials.get(mat_name) or
 			   bpy.data.materials.new(mat_name))
+		tex = bpy.data.textures.new(os.path.basename(shader), 'IMAGE')
+		imagefilename = get_image_filename(filepath, shader)
+		if imagefilename:
+			tex.image = bpy.data.images.load(filepath = imagefilename)
+		slot = mat.texture_slots.add()
+		slot.texture = tex
+		# apply texture in 3D View's Texture View
+		slot.uv_layer = "UVMap"
+		for uv_face in mesh.uv_textures.active.data:
+			uv_face.image = tex.image
+		# apply texture in Cycles (Now Blender Render won't work until you turn off Use Node Tree)
+		mat.use_nodes = True
+		nt = mat.node_tree
+		nodes = nt.nodes
+		links = nt.links
+		while(nodes): nodes.remove(nodes[0])
+		output  = nodes.new("ShaderNodeOutputMaterial")
+		diffuse = nodes.new("ShaderNodeBsdfDiffuse")
+		texture = nodes.new("ShaderNodeTexImage")
+		texture.image = tex.image
+		links.new( output.inputs['Surface'], diffuse.outputs['BSDF'])
+		links.new(diffuse.inputs['Color'],   texture.outputs['Color'])
+		# distribute nodes along the x axis
+		for index, node in enumerate((texture, diffuse, output)):
+			node.location.x = 200.0 * index
+		# apply material
 		mesh.materials.append(mat)
-		# todo add texture
-		# search order:
-		#   path + filename.tga
-		#   base + mat_name + .tga
-		#   path + filename(mat_name) + .tga
-		#   base + filepath(mat_name) + filename.tga
 		
 
 	return arm_obj
@@ -389,6 +447,91 @@ def do_joints(lines, re_joint, re_end, filename):
 	arm_obj['name_to_index'] = name_to_index
 	return arm_obj, matrices
 
+def do_bones(lines, reg_exprs, filename):
+	(re_bone,
+	 re_name,
+	 re_bindpos,
+	 re_bindmat,
+	 re_parent_name,
+	 re_end_bone,
+	 re_end) = reg_exprs
+
+	arm = bpy.data.armatures.new("MD5 alpha")
+	arm_obj = bpy.data.objects.new(filename, arm)
+	arm_obj.select = True
+	bpy.context.scene.objects.link(arm_obj)
+	bpy.context.scene.objects.active = arm_obj
+
+	matrices = []
+	name_to_index = {}
+	VEC_Y = Vector((0.0, 1.0, 0.0))
+	VEC_Z = Vector((0.0, 0.0, 1.0))
+
+	bpy.ops.object.mode_set(mode='EDIT')
+	edit_bones = arm.edit_bones
+
+	for line in lines:
+		mobj = re_bone.match(line)
+		if mobj:
+			index = int(mobj.group(1))
+			parent = -1
+			for s in lines:
+				mobj = re_name.match(s)
+				if mobj:
+					name = token_value(mobj, "bone%d" % (index))
+					name_to_index[name] = index
+					continue
+				mobj = re_parent_name.match(s)
+				if mobj:
+					parent_name = token_value(mobj, "")
+					parent = name_to_index[parent_name]
+					continue
+				mobj = re_bindpos.match(s)
+				if mobj:
+					loc  = unpack_tuple(mobj, 1, 3)
+					continue
+				mobj = re_bindmat.match(s)
+				if mobj:
+					# we need to convert this 3x3 matrix into something useable
+					rot = mathutils.Matrix()
+					rot[0][0], rot[1][0], rot[2][0] = float(mobj.group(1)), float(mobj.group(2)), float(mobj.group(3))
+					rot[0][1], rot[1][1], rot[2][1] = float(mobj.group(4)), float(mobj.group(5)), float(mobj.group(6))
+					rot[0][2], rot[1][2], rot[2][2] = float(mobj.group(7)), float(mobj.group(8)), float(mobj.group(9))
+					#rot[0][0], rot[0][1], rot[0][2] = float(mobj.group(1)), float(mobj.group(2)), float(mobj.group(3))
+					#rot[1][0], rot[1][1], rot[1][2] = float(mobj.group(4)), float(mobj.group(5)), float(mobj.group(6))
+					#rot[2][0], rot[2][1], rot[2][2] = float(mobj.group(7)), float(mobj.group(8)), float(mobj.group(9))
+					continue
+				mobj = re_end_bone.match(s)
+				if mobj:
+					break
+			eb = edit_bones.new(name)
+			if parent >= 0:
+				eb.parent = edit_bones[parent]
+
+			mat = Matrix.Translation(loc) * rot.to_4x4()
+			matrices.append((name, mat))
+
+			eb.head = loc
+			eb.tail = loc + rot * VEC_Y
+			eb.align_roll(rot * VEC_Z)
+
+			continue
+		mobj = re_end.match(line)
+		if mobj:
+			break
+
+	for eb in arm.edit_bones:
+		if len(eb.children) == 1:
+			child = eb.children[0]
+			head_to_head = child.head - eb.head
+			projection = head_to_head.project(eb.y_axis)
+			if eb.y_axis.dot(projection) > 5e-2:
+				eb.tail = eb.head + projection
+
+	bpy.ops.object.mode_set()
+	arm_obj['name_to_index'] = name_to_index
+	return arm_obj, matrices
+
 def do_mesh(lines, reg_exprs, matrices):
 	(re_shader,
 	 re_vert,
@@ -400,22 +543,20 @@ def do_mesh(lines, reg_exprs, matrices):
 	 re_name) = reg_exprs
 
 	mobjs__label, mobjs___name, mobjs_shader = gather_multi([re_label, re_name, re_shader], re_nverts, lines)
-	label  = mobjs__label[0].group(1) if len(mobjs__label) > 0 else "md5mesh"
+	label  = mobjs__label[0].group(1) if len(mobjs__label) > 0 else ""
 	if len(mobjs___name) > 0:
-		if mobjs___name[0].group(1) is not None:
-			label = mobjs___name[0].group(1)
-		if mobjs___name[0].group(2) is not None:
-			label = mobjs___name[0].group(2)
-		if mobjs___name[0].group(3) is not None:
-			label = mobjs___name[0].group(3)
+		label = token_value(mobjs___name[0], label)
 	shader = ""
 	if len(mobjs_shader) > 0:
-		if mobjs_shader[0].group(1) is not None:
-			shader = mobjs_shader[0].group(1)
-		if mobjs_shader[0].group(2) is not None:
-			shader = mobjs_shader[0].group(2)
-		if mobjs_shader[0].group(3) is not None:
-			shader = mobjs_shader[0].group(3)
+		shader = token_value(mobjs_shader[0], shader)
+
+	if shader == "" and label == "":
+		label = "md5mesh"
+		shader = ""
+	elif shader == "":
+		shader = label
+	elif label == "":
+		label, file_extension = os.path.splitext(os.path.basename(shader))
 
 	verts, tris, weights = gather_multi(
 		[re_vert, re_tri, re_weight],
@@ -423,6 +564,8 @@ def do_mesh(lines, reg_exprs, matrices):
 		lines
 	)
 
+	print("do_mesh", label, shader)
+	
 	bm = bmesh.new()
 	process_match_objects(verts,   Vert)
 	process_match_objects(weights, Weight)
