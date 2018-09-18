@@ -17,12 +17,12 @@
 # ##### END GPL LICENSE BLOCK #####
 
 bl_info = {
-	"name": "Id Tech 4 md5mesh and md5anim format",
-	"author": "pink vertex, Carl Kenner",
+	"name": "Id Tech 4 md5mesh, bmd5mesh, and md5anim format",
+	"author": "Carl Kenner, pink vertex",
 	"version": (0, 2),
 	"blender": (2, 77, 0),
 	"location": "File -> Import-Export",
-	"description": "Import-Export *.md5mesh and *.md5anim files",
+	"description": "Import-Export *.md5mesh, *.bmd5mesh, *.md5anim files",
 	"warning": "",
 	"wiki_url": "https://github.com/CarlKenner/blender_addon_md5",
 	"category": "Import-Export",
@@ -40,27 +40,43 @@ import bpy
 from bpy.props import StringProperty, IntProperty, FloatProperty, EnumProperty, CollectionProperty
 from bpy_extras.io_utils import ImportHelper, ExportHelper
 
-from .io_md5mesh import read_md5mesh, write_md5mesh
+from .io_md5mesh import read_md5mesh, read_bmd5mesh, write_md5mesh
 from .io_md5anim import read_md5anim, write_md5anim
 from .import_hudguns import setup_cam, import_from_config
 
 class MD5Preferences(bpy.types.AddonPreferences):
 	bl_idname = __name__
+	mod_dir = StringProperty(name="Mod Directory", default="", subtype="DIR_PATH")
+	bfg_base_dir = StringProperty(name="Extracted Doom 3 BFG base Dir", default="", subtype="DIR_PATH")
+	base_dir = StringProperty(name="Extracted base Directory", default="", subtype="DIR_PATH")
+	d3xp_dir = StringProperty(name="Extracted RoE d3xp Directory", default="", subtype="DIR_PATH")
+	q4base_dir = StringProperty(name="Extracted Quake 4 q4base Directory", default="", subtype="DIR_PATH")
+	alpha_dir = StringProperty(name="Doom 3 Alpha Directory", default="", subtype="DIR_PATH")
 	sb_dir = StringProperty(name="Sauerbraten Directory", default="", subtype="DIR_PATH")
 
 	def draw(self, context):
+		self.layout.prop(self, "mod_dir")
+		self.layout.prop(self, "bfg_base_dir")
+		self.layout.prop(self, "base_dir")
+		self.layout.prop(self, "d3xp_dir")
+		self.layout.prop(self, "q4base_dir")
+		self.layout.prop(self, "alpha_dir")
 		self.layout.prop(self, "sb_dir")
 
 class OT_IMPORT_MESH_md5mesh(bpy.types.Operator, ImportHelper):
 	bl_idname = "import_mesh.md5"
-	bl_label = "Import *.md5mesh Mesh"
+	bl_label = "Import .md5mesh or .bmd5mesh"
 	bl_options = {"REGISTER", "UNDO"}
 
 	filename_ext = ".md5mesh"
-	filter_glob = StringProperty(default="*.md5mesh", options={'HIDDEN'})
+	filter_glob = StringProperty(default="*.md5mesh;*.bmd5mesh", options={'HIDDEN'})
 
 	def execute(self, context):
-		read_md5mesh(self.filepath)
+		root, ext = os.path.splitext(self.filepath)
+		if ext.lower() == ".bmd5mesh":
+			read_bmd5mesh(self.filepath)
+		else:
+			read_md5mesh(self.filepath)
 		return {"FINISHED"}
 
 
@@ -72,14 +88,29 @@ class OT_EXPORT_MESH_md5mesh(bpy.types.Operator, ExportHelper):
 	filename_ext = ".md5mesh"
 	filter_glob = StringProperty(default="*.md5mesh", options={'HIDDEN'})
 
+	version = EnumProperty(items=(
+		("10",    "Doom 3/Quake 4", "", 0),
+		("6",     "Doom 3 alpha",   "", 1),
+		("SB",    "Sauerbraten",    "", 2)),
+		name="Version",
+		default="10"
+	)
+
 	@classmethod
 	def poll(cls, context):
 		return (context.active_object and
 				context.active_object.type == "ARMATURE")
 
 	def execute(self, context):
-		write_md5mesh(self.filepath, context.scene, context.active_object)
+		write_md5mesh(self.filepath, context.scene, context.active_object, self.version)
 		return {"FINISHED"}
+
+	def draw(self, context):
+		pref = context.user_preferences.addons[__name__].preferences
+		layout = self.layout
+		col = layout.column()
+		col.prop(self, "version")
+
 
 class OT_IMPORT_ANIM_md5anim(bpy.types.Operator, ImportHelper):
 	bl_idname = "import_anim.md5"
@@ -188,7 +219,7 @@ class OT_IMPORT_MESH_sb_hudgun(bpy.types.Operator, ImportHelper):
 		layout.prop(pref, "sb_dir")
 
 reg_table = (
-	[OT_IMPORT_MESH_md5mesh,   bpy.types.INFO_MT_file_import, "MD5 Mesh (.md5mesh)"	   ],
+	[OT_IMPORT_MESH_md5mesh,   bpy.types.INFO_MT_file_import, "MD5 Mesh (.md5mesh;.bmd5mesh)"],
 	[OT_IMPORT_ANIM_md5anim,   bpy.types.INFO_MT_file_import, "MD5 Animation (.md5anim)"],
 	[OT_EXPORT_MESH_md5mesh,   bpy.types.INFO_MT_file_export, "MD5 Mesh (.md5mesh)"     ],
 	[OT_EXPORT_ANIM_md5anim,   bpy.types.INFO_MT_file_export, "MD5 Animation (.md5anim)"],

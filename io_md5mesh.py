@@ -197,11 +197,21 @@ class Mesh:
 				vert = self.verts[loop.vert.index]
 				vert.uv = loop[layer_uv].uv
 
-	def serialize(self, stream):
-		stream.write("\nmesh {\n")
-		stream.write("\t// meshes: %s\n"   % self.mesh_obj.name) # Sauerbraten allegedly reads this field, as do Blender importers
-		stream.write("\tname \"%s\"\n"   % self.mesh_obj.name) # Doom 3 reads this field if present, Sauerbraten ignores it. Mesh files don't normally contain it.
-		stream.write("\tshader \"%s\"\n" % self.shader) # This field MUST be present or Doom 3 won't load the mesh!
+	def serialize(self, stream, index, version):
+		if (version=="6"):
+			stream.write("\nmesh %d {\n" % (index))
+		else:
+			stream.write("\nmesh {\n")
+		if version!="6":
+			stream.write("\t// meshes: %s\n"   % self.mesh_obj.name) # Sauerbraten reads this field, as do Blender importers
+		if version=="10":
+			stream.write("\tname \"%s\"\n"   % self.mesh_obj.name) # Doom 3 reads this field if present, Sauerbraten ignores it. Mesh files don't normally contain it.
+		elif version=="SB":
+			stream.write("\n")
+		if version=="6":
+			stream.write("\tshader \"%s\"\n" % add_ext(os.path.join("P:/Doom/base", self.shader).replace("\\","/"),".tga"))
+		else:
+			stream.write("\tshader \"%s\"\n" % self.shader) # This field MUST be present or Doom 3 won't load the mesh!
 		stream.write("\n\tnumverts %d\n"   % len(self.verts)) # MUST be present, must be >= 0 and must be accurate
 
 		for vert in self.verts:
@@ -243,6 +253,19 @@ class Joint:
 			pindex = self.parent_index,
 			loc = "( "+nums(self.loc.x)+" "+nums(self.loc.y)+" "+nums(self.loc.z)+" )",
 			rot = "( "+nums(self.rot[1])+" "+nums(self.rot[2])+" "+nums(self.rot[3])+" )",
+			pname  = self.parent_name
+		))
+
+	def serialize6(self, stream):
+		if self.parent_index == -1:
+			fmt = "bone {index:d} {{\n\tname \"{name:s}\"\n\tbindpos {loc:s}\n\tbindmat {rot:s}\n}}\n\n"
+		else:
+			fmt = "bone {index:d} {{\n\tname \"{name:s}\"\n\tbindpos {loc:s}\n\tbindmat {rot:s}\n\tparent \"{pname:s}\"\n}}\n\n"
+		stream.write(fmt.format(
+			index = self.index,
+			name   = self.name,
+			loc = num6(self.loc.x)+" "+num6(self.loc.y)+" "+num6(self.loc.z),
+			rot = num6(self.mat[0][0])+" "+num6(self.mat[1][0])+" "+num6(self.mat[2][0])+" "+num6(self.mat[0][1])+" "+num6(self.mat[1][1])+" "+num6(self.mat[2][1])+" "+num6(self.mat[0][2])+" "+num6(self.mat[1][2])+" "+num6(self.mat[2][2]),
 			pname  = self.parent_name
 		))
 
@@ -296,7 +319,7 @@ def read_md5mesh(filepath):
 	re_parent_name = construct("parent", t_token)
 	re_bindpos = construct("bindpos", t_Tuple3f)
 	re_bindmat = construct("bindmat", t_Tuple9f)
-	re_nmeshes = construct("nummeshes", t_Int)
+	re_nmeshes = construct("nummeshes", t_Int) # only matches the alpha, normal Doom 3 uses numMeshes
 
 	with open(filepath, "r") as fobj:
 		lines = iter(fobj.readlines())
@@ -435,6 +458,88 @@ def do_joints(lines, re_joint, re_end, filename):
 		eb.tail = loc + quat * VEC_Y
 		eb.align_roll(quat * VEC_Z)
 
+	for eb in arm.edit_bones:
+		if len(eb.children) == 1:
+			child = eb.children[0]
+			head_to_head = child.head - eb.head
+			projection = head_to_head.project(eb.y_axis)
+			if eb.y_axis.dot(projection) > 5e-2:
+				eb.tail = eb.head + projection
+
+	bpy.ops.object.mode_set()
+	arm_obj['name_to_index'] = name_to_index
+	return arm_obj, matrices
+
+def do_binary_joints(file, filename):
+	arm = bpy.data.armatures.new("MD5")
+	arm_obj = bpy.data.objects.new(filename, arm)
+	arm_obj.select = True
+	bpy.context.scene.objects.link(arm_obj)
+	bpy.context.scene.objects.active = arm_obj
+
+	matrices = []
+	name_to_index = {}
+	VEC_Y = Vector((0.0, 1.0, 0.0))
+	VEC_Z = Vector((0.0, 0.0, 1.0))
+
+	bpy.ops.object.mode_set(mode='EDIT')
+	edit_bones = arm.edit_bones
+	
+	joints = []
+	quats = []
+
+	numJoints = read_big_int(file)
+	print ("numJoints %d\nnumMeshes\n\njoints {" % numJoints)
+	for index in range(numJoints):
+		name = read_string(file)
+		parent = read_big_int(file)
+		joints.append((name, parent))
+		name_to_index[name] = index
+
+	numDefaultPoses = read_big_int(file)
+	#print ("%d poses", numDefaultPoses)
+	for index in range(numDefaultPoses):
+		if index < numJoints:
+			name, parent = joints[index]
+		else:
+			name = "bone%d" % (index)
+			parent = -1
+			name_to_index[name] = index
+
+		quat = read_quat(file)
+		#if parent >= 0:
+		#	quat = quats[parent] * quat
+		#quat.normalize()
+		#quats.append(quat)
+		loc = read_vec3(file)
+
+		eb = edit_bones.new(name)
+		if parent >= 0:
+			eb.parent = edit_bones[parent]
+
+		mat = Matrix.Translation(loc) * quat.to_matrix().to_4x4()
+
+		if parent < 0:
+			parent_name = ""
+			parent_mat = Matrix()
+		else:
+			parent_name = joints[parent][0]
+			parent_mat = matrices[parent][1]
+
+		mat = parent_mat * mat
+		matrices.append((name, mat))
+
+		print("\t\"%s\"\t%d ( %.5f %.5f %.5f ) ( %.5f %.5f %.5f )\t\t// %s" % (name, parent, loc.x, loc.y, loc.z, quat[0], quat[1], quat[2], parent_name))
+		
+		eb.head = loc
+		eb.tail = loc + quat * VEC_Y
+		eb.align_roll(quat * VEC_Z)
+
+	numInvertedDefaultPoses = read_big_int(file)
+	print ("%d inverted poses", numInvertedDefaultPoses)
+	for index in range(numInvertedDefaultPoses):
+		file.read( 4 * 3 * 4 )
+		
 	for eb in arm.edit_bones:
 		if len(eb.children) == 1:
 			child = eb.children[0]
@@ -598,6 +703,76 @@ def do_mesh(lines, reg_exprs, matrices):
 
 	return label, shader, bm
 
+def do_binary_mesh(file, matrices):
+
+	shader = read_string(file)
+	#print("mesh shader = ", shader)
+	label, file_extension = os.path.splitext(os.path.basename(shader))
+	numVerts = read_big_int(file)
+	numTris = read_big_int(file)
+	numMeshJoints = read_big_int(file)
+	meshJoints = file.read(numMeshJoints)
+	maxJointVertDist = read_big_float(file)
+	numSourceVerts = read_big_int(file)
+	numOutputVerts = read_big_int(file)
+	numIndexes = read_big_int(file)
+	numMirroredVerts = read_big_int(file)
+	numDupVerts = read_big_int(file)
+	numSilEdges = read_big_int(file)
+
+	bm = bmesh.new()
+	layer_weight = bm.verts.layers.deform.verify()
+	layer_uv	 = bm.loops.layers.uv.verify()
+
+	verts = []
+	for vert_index in range(numOutputVerts):
+		vert = Vert()
+		vert.index = vert_index
+		x = read_big_float(file)
+		y = read_big_float(file)
+		z = read_big_float(file)
+		vert.bmv = bm.verts.new(Vector((x,y,z)))
+		u = F16toF32(read_big_short(file))
+		v = F16toF32(read_big_short(file))
+		vert.uv = Vector((u, v))
+		normal = file.read(4)
+		tangent = file.read(4) # [3] is texture polarity sign
+		finalJointIndecies = file.read(4) # joint indexes for skinning
+		finalWeights = file.read(4) # weights for skinning
+		for i in range(4):
+			if finalJointIndecies[i] >= 0:
+				vert.bmv[layer_weight][finalJointIndecies[i]] = finalWeights[i] / 255.0
+		verts.append(vert)
+
+	for tri_index in range(numIndexes // 3):
+		v1 = read_big_short(file)
+		v2 = read_big_short(file)
+		v3 = read_big_short(file)
+		vertex_indices = [v1, v2, v3]
+		bm_verts = [verts[vertex_index].bmv for vertex_index in vertex_indices]
+		# bm_verts.reverse() - use bmesh operator instead
+		try:
+			face = bm.faces.new(bm_verts)
+		except ValueError: # some models contain duplicate faces
+			continue
+		face.smooth = True		
+
+	file.read(numIndexes * 2) # silIndexes
+	file.read(numMirroredVerts * 4)
+	file.read(numDupVerts * 2 * 4)
+	file.read(numSilEdges * 8)
+	surfaceNum = read_big_int(file)
+
+	for vert in verts:
+		for loop in vert.bmv.link_loops:
+			loop[layer_uv].uv = vert.uv
+			vert.bmv = None
+
+	# flip normals
+	bmesh.ops.reverse_faces(bm, faces=bm.faces[:], flip_multires=False)
+
+	return label, shader, bm
+
 #-------------------------------------------------------------------------------
 # Write md5mesh
 #-------------------------------------------------------------------------------
@@ -611,7 +786,7 @@ def on_active_layer(scene, obj):
 			return True
 	return False
 
-def write_md5mesh(filepath, scene, arm_obj):
+def write_md5mesh(filepath, scene, arm_obj, version):
 	meshes = []
 
 	for mesh_obj in filter(is_mesh_object, scene.objects):
@@ -631,24 +806,149 @@ def write_md5mesh(filepath, scene, arm_obj):
 		mesh.set_weights(joints, name_to_index)
 
 	with open(filepath, "w") as stream:
-		stream.write("MD5Version 10\n")
+		if (version == "SB"):
+			stream.write("MD5Version 10\n")
+		else:
+			stream.write("MD5Version %s\n" % (version))
 
 		commandline = arm_obj.get("commandline")
-		if commandline is None:
+		if commandline is None or version=="SB":
 			commandline = ""
-		stream.write("commandline \"%s\"\n\n" % (commandline)) # MUST be present for Doom 3
+		stream.write("commandline \"%s\"\n" % (commandline)) # MUST be present for Doom 3
+		if (version=="6"):
+			stream.write("numbones %d\n\n" % len(joints))
+			for joint in joints:
+				joint.serialize6(stream)
+			stream.write("nummeshes %d\n" % len(meshes))
+		else:
+			stream.write("\nnumJoints %d\n" % len(joints))
+			stream.write("numMeshes %d\n" % len(meshes))
 
-		stream.write("numJoints %d\n" % len(joints))
-		stream.write("numMeshes %d\n" % len(meshes))
+			stream.write("\njoints {\n")
+			for joint in joints:
+				joint.serialize(stream)
+			stream.write("}\n")
 
-		stream.write("\njoints {\n")
-		for joint in joints:
-			joint.serialize(stream)
-		stream.write("}\n")
-
+		index = 0
 		for mesh in meshes:
-			mesh.serialize(stream)
+			mesh.serialize(stream, index, version)
 			mesh.finish()
+			index += 1
+
+#-------------------------------------------------------------------------------
+# Read bmd5mesh
+#-------------------------------------------------------------------------------
+
+def read_bmd5mesh(filepath):
+	file = open(filepath, 'rb')
+
+	# BRM header
+	magic = read_big_int(file)
+	if magic != 0x42524D6C:
+		print('\tFatal Error: %d Not a valid binary render model file: %r' % (magic, filepath))
+		file.close()
+		return
+	
+	timeStamp = read_big_int64(file)
+	numSurfaces = read_big_int(file)
+	for index in range(numSurfaces):
+		id = read_big_int(file)
+		materialName = read_string(file)
+		isGeometry = read_bool(file)
+		if isGeometry:
+			print("unsupported!")
+			file.close()
+			return
+	bounds0 = read_vec3(file)
+	bounds1 = read_vec3(file)
+	overlaysAdded = read_big_int(file)
+	lastModifiedFrame = read_big_int(file)
+	lastArchivedFrame = read_big_int(file)
+	modelName = read_string(file)
+	isStaticWorldModel = read_bool(file)
+	defaulted = read_bool(file)
+	purged = read_bool(file)
+	fastLoad = read_bool(file)
+	reloadable = read_bool(file)
+	levelLoadReferenced = read_bool(file)
+	hasDrawingSurfaces = read_bool(file)
+	hasInteractingSurfaces = read_bool(file)
+	hasShadowCastingSurfaces = read_bool(file)
+	
+	# Actual MD5 file
+	magic = read_big_int(file)
+	if magic != 0x35444D6A:
+		print('\tFatal Error: %d Not a valid bmd5mesh file: %r' % (magic, filepath))
+		file.close()
+		return
+	
+	filename, file_extension = os.path.splitext(os.path.basename(filepath))
+
+	commandline = ""
+	arm_obj, matrices = do_binary_joints(file, filename)
+	arm_obj['commandline'] = commandline # save commandline in a c
+
+	results = []
+	n = 0
+
+	numMeshes = read_big_int(file)
+	for n in range(numMeshes):
+		results.append(do_binary_mesh(file, matrices))
+	
+	file.close()
+
+	for label, shader, bm in results:
+		mesh = bpy.data.meshes.new(label)
+		bm.to_mesh(mesh)
+		bm.free()
+
+		mesh.auto_smooth_angle = math.radians(45)
+		mesh.use_auto_smooth = True
+
+		mesh_obj = bpy.data.objects.new(label, mesh)
+		for joint_name, mat in matrices:
+			mesh_obj.vertex_groups.new(name=joint_name)
+
+		mesh_obj.parent = arm_obj
+		arm_mod = mesh_obj.modifiers.new(type='ARMATURE', name="MD5_skeleton")
+		arm_mod.object = arm_obj
+		arm_mod.use_deform_preserve_volume = True
+
+		bpy.context.scene.objects.link(mesh_obj)
+
+		# apply texture in Blender Render
+		mat_name = get_doom3_shader_name(shader)
+		mat = (bpy.data.materials.get(mat_name) or
+			   bpy.data.materials.new(mat_name))
+		tex = bpy.data.textures.new(os.path.basename(shader), 'IMAGE')
+		imagefilename = get_image_filename(filepath, shader)
+		if imagefilename:
+			tex.image = bpy.data.images.load(filepath = imagefilename)
+		slot = mat.texture_slots.add()
+		slot.texture = tex
+		# apply texture in 3D View's Texture View
+		slot.uv_layer = "UVMap"
+		for uv_face in mesh.uv_textures.active.data:
+			uv_face.image = tex.image
+		# apply texture in Cycles (Now Blender Render won't work until you turn off Use Node Tree)
+		mat.use_nodes = True
+		nt = mat.node_tree
+		nodes = nt.nodes
+		links = nt.links
+		while(nodes): nodes.remove(nodes[0])
+		output  = nodes.new("ShaderNodeOutputMaterial")
+		diffuse = nodes.new("ShaderNodeBsdfDiffuse")
+		texture = nodes.new("ShaderNodeTexImage")
+		texture.image = tex.image
+		links.new( output.inputs['Surface'], diffuse.outputs['BSDF'])
+		links.new(diffuse.inputs['Color'],   texture.outputs['Color'])
+		# distribute nodes along the x axis
+		for index, node in enumerate((texture, diffuse, output)):
+			node.location.x = 200.0 * index
+		# apply material
+		mesh.materials.append(mat)
+
+	return arm_obj
 
 #-------------------------------------------------------------------------------
 # Test

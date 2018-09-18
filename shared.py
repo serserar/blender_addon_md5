@@ -2,10 +2,14 @@ import re
 import math
 import bpy
 import os
+import struct
 from mathutils import Vector, Matrix, Quaternion
 
 fmt_row2f = "( {} {} )"
 fmt_row3f = "( {} {} {} )"
+
+def num6(x):
+	return ("%.6f" % (x))
 
 def nums(x):
 	if abs(x - int(x)) < 0.000005:
@@ -191,3 +195,70 @@ def get_image_filename(localfilename, givenfilename):
 	if fn != imagefilename and os.path.isfile(fn) and os.access(fn, os.R_OK):
 		return fn
 	return None
+
+def read_little_int(file):
+	result = struct.unpack("<i", file.read(4))[0]
+	#print("read_little_int", result)
+	return result
+
+def read_little_float(file):
+	result = struct.unpack("<f", file.read(4))[0]
+	#print("read_little_float", result)
+	return result
+
+def read_big_int(file):
+	result = struct.unpack(">i", file.read(4))[0]
+	#print("read_big_int", result)
+	return result
+
+def read_big_int64(file):
+	result = struct.unpack(">q", file.read(8))[0]
+	#print("read_big_int64", result)
+	return result
+
+def read_big_float(file):
+	result = struct.unpack(">f", file.read(4))[0]
+	#print("read_big_int", result)
+	return result
+
+def read_big_short(file):
+	result = struct.unpack(">H", file.read(2))[0]
+	#print("read_big_int", result)
+	return result
+
+def read_byte(file):
+	return int(file.read(1)[0])
+
+def read_bool(file):
+	return bool(file.read(1)[0])
+
+def read_vec3(file):
+	# Vectors are little-endian, even though individual floats are big-endian!
+	result = Vector(struct.unpack("<fff", file.read(3*4)))
+	return result
+
+def read_quat(file):
+	result = Quaternion(struct.unpack(">ffff", file.read(4*4)))
+	#print("read_big_int", result)
+	return result
+
+def read_string(file):
+	length = read_little_int(file)
+	result = "".join(map(chr, file.read(length)))
+	#print("read_string", result)
+	return result
+
+def F16toF32(x):
+	e = (x & 32767) >> 10
+	m = x & 1023
+	if x & 32768:
+		s = 1
+	else:
+		s = 0
+	
+	if 0 < e and e < 31:
+		return s * pow( 2.0, ( e - 15.0 ) ) * ( 1 + m / 1024.0 )
+	elif m == 0:
+		return s * 0.0
+	return s * pow( 2.0, -14.0 ) * ( m / 1024.0 );
+
