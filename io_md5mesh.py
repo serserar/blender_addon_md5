@@ -706,7 +706,7 @@ def do_mesh(lines, reg_exprs, matrices):
 def do_binary_mesh(file, matrices):
 
 	shader = read_string(file)
-	#print("mesh shader = ", shader)
+	print("mesh shader = ", shader)
 	label, file_extension = os.path.splitext(os.path.basename(shader))
 	numVerts = read_big_int(file)
 	numTris = read_big_int(file)
@@ -732,8 +732,8 @@ def do_binary_mesh(file, matrices):
 		y = read_big_float(file)
 		z = read_big_float(file)
 		vert.bmv = bm.verts.new(Vector((x,y,z)))
-		u = F16toF32(read_big_short(file))
-		v = F16toF32(read_big_short(file))
+		u = read_big_half(file)
+		v = read_big_half(file)
 		vert.uv = Vector((u, v))
 		normal = file.read(4)
 		tangent = file.read(4) # [3] is texture polarity sign
@@ -835,36 +835,356 @@ def write_md5mesh(filepath, scene, arm_obj, version):
 			mesh.finish()
 			index += 1
 
+def ReadNodeTree(file):
+	planeType = read_big_int(file)
+	planeDist = read_big_float(file)
+	i = read_big_int(file)
+	while i >= 0:
+		i = read_big_int(file)
+	i = read_big_int(file)
+	while i >= 0:
+		i = read_big_int(file)
+	if planeType != -1:
+		ReadNodeTree(file)
+		ReadNodeTree(file)
+
+def read_bcmodel(file, filepath, index, magic):
+	# Read actual file
+	if magic != 0x424F0064: # funny bug in Doom 3 BFG: It was supposed to be BCM but there's a typo in their bitshift, making it BO
+		print('\tFatal Error: %d Not a valid .bcm model in file: %r' % (magic, filepath))
+		return
+	storedTimeStamp = read_big_int64(file)
+	name = read_string(file)
+	print("Reading bcm model:", name)
+	bm = bmesh.new()
+	layer_weight = bm.verts.layers.deform.verify()
+	layer_uv	 = bm.loops.layers.uv.verify()
+
+	bounds = []
+	for i in range(6):
+		bounds.append(read_big_float(file))
+	contents = read_big_int(file)
+	isConvex = read_bool(file)
+	numVertices = read_big_int(file)
+	numEdges = read_big_int(file)
+	numPolygons = read_big_int(file)
+	numBrushes = read_big_int(file)
+	numNodes = read_big_int(file)
+	numBrushRefs = read_big_int(file)
+	numPolygonRefs = read_big_int(file)
+	numInternalEdges = read_big_int(file)
+	numSharpEdges = read_big_int(file)
+	numRemovedPolys = read_big_int(file)
+	numMergedPolys = read_big_int(file)
+	verts = []
+	for i in range(numVertices):
+		x = read_big_float(file)
+		y = read_big_float(file)
+		z = read_big_float(file)
+		checkcount = read_big_int(file)
+		side = read_big_int(file)
+		sideSet = read_big_int(file)
+		vert = Vert()
+		vert.index = i
+		vert.bmv = bm.verts.new(Vector((x,y,z)))
+		#vert.uv = Vector((u, v))
+		verts.append(vert)
+	
+	edgeVertices = []
+	for i in range(numEdges):
+		checkcount = read_big_int(file)
+		internal = read_big_short(file)
+		numnUsers = read_big_short(file)
+		side = read_big_int(file)
+		sideSet = read_big_int(file)
+		vertexNum0 = read_big_int(file)
+		vertexNum1 = read_big_int(file)
+		normalx = read_big_float(file)
+		normaly = read_big_float(file)
+		normalz = read_big_float(file)
+		edgeVertices.append(verts[vertexNum0].bmv)
+		edgeVertices.append(verts[vertexNum1].bmv)
+		vertex_indices = [vertexNum0, vertexNum1]
+		bm_verts = [verts[vertex_index].bmv for vertex_index in vertex_indices]
+		# bm_verts.reverse() - use bmesh operator instead
+		try:
+			edge = bm.edges.new(bm_verts)
+		except ValueError: # some models contain duplicate faces
+			continue
+	
+	polygonMemory = read_big_int(file)
+	brushMemory = read_big_int(file)
+	numMaterials = read_big_int(file)
+	
+	materials = []
+	for i in range(numMaterials):
+		m = read_string(file)
+		materials.append(m)
+		print("Adding material", i, m)
+
+	for i in range(numPolygons):
+		materialIndex = read_big_int(file)
+		numPolyEdges = read_big_int(file)
+		
+		bounds2 = []
+		for b in range(6):
+			bounds2.append(read_big_float(file))
+		checkcount = read_big_int(file)
+		contents2 = read_big_int(file)
+		a = read_big_float(file)
+		b = read_big_float(file)
+		c = read_big_float(file)
+		d = read_big_float(file)
+		polyEdges = []
+		polyVerts = []
+		print("Adding face %d with material %s" % (i, materials[materialIndex]))
+		for e in range(numPolyEdges):
+			edge_index = read_big_int(file)
+			polyEdges.append(edge_index)
+			if edge_index >= 0:
+				vert = edgeVertices[abs(edge_index)*2]
+				if vert not in polyVerts:
+					polyVerts.append(vert)
+				vert = edgeVertices[abs(edge_index)*2+1]
+				if vert not in polyVerts:
+					polyVerts.append(vert)
+			else:
+				vert = edgeVertices[abs(edge_index)*2+1]
+				if vert not in polyVerts:
+					polyVerts.append(vert)
+				vert = edgeVertices[abs(edge_index)*2]
+				if vert not in polyVerts:
+					polyVerts.append(vert)
+			#print("  Adding face edge", edge_index)
+		try:
+			face = bm.faces.new(polyVerts)
+		except ValueError: # some models contain duplicate faces
+			continue
+		face.smooth = False
+
+	for i in range(numBrushes):
+		materialIndex = read_big_int(file)
+		numPlanes = read_big_int(file)
+		checkcount = read_big_int(file)
+		bounds2 = []
+		for b in range(6):
+			bounds2.append(read_big_float(file))
+		contents2 = read_big_int(file)
+		primitiveNum = read_big_int(file)
+		for p in range(numPlanes):
+			a = read_big_float(file)
+			b = read_big_float(file)
+			c = read_big_float(file)
+			d = read_big_float(file)
+
+	mesh = bpy.data.meshes.new("BCM "+name)
+	bm.to_mesh(mesh)
+	bm.free()
+
+	mesh.use_auto_smooth = False
+
+	mesh_obj = bpy.data.objects.new("BCM "+name, mesh)
+	mesh_obj.select = True
+	bpy.context.scene.objects.link(mesh_obj)
+	bpy.context.scene.objects.active = mesh_obj
+
+	ReadNodeTree(file)
+
+	return
+
+def read_bcm(file, filepath, numEntries):
+	# Finish reading .bcm header
+	mapName = read_string(file)
+	print("Reading .bcm:", mapName)
+	crc = read_big_int(file)
+	fileID = read_string(file)
+	fileVersion = read_string(file)
+	if fileID != "CM" or fileVersion != "1.00" or numEntries <= 0:
+		print('\tFatal Error: %d %s %s Not a valid binary Trace collision model file: %r' % (numEntries, fileID, fileVersion, filepath))
+		file.close
+		return
+	for index in range(numEntries):
+		magic = read_big_int(file)
+		result = read_bcmodel(file, filepath, index, magic)
+	
+	file.close
+	return result
+
+def read_surface(file, filepath, surface_index):
+	id = read_big_int(file)
+	shader = read_string(file)
+	label, file_extension = os.path.splitext(os.path.basename(shader))
+	if label == "":
+		label = "Surface %d" % surface_index
+	isGeometry = read_bool(file)
+	if isGeometry:
+		bounds0 = read_vec3(file)
+		bounds1 = read_vec3(file)
+		ambientViewCount = read_big_int(file)
+		generateNormals = read_bool(file)
+		tangentsCalculated = read_bool(file)
+		perfectHull = read_bool(file)
+		referencedIndexes = read_bool(file)
+
+		numVerts = read_big_int(file)
+
+		print("Reading surface", surface_index, shader)
+		bm = bmesh.new()
+		layer_weight = bm.verts.layers.deform.verify()
+		layer_uv	 = bm.loops.layers.uv.verify()
+
+		numInFile = read_big_int(file)
+		verts = []
+		if numInFile > 0:
+			for j in range(numVerts):
+				xyz = read_vec3(file)
+				u = read_big_half(file)
+				v = 1 - read_big_half(file)
+				normal = file.read(4)
+				tangent = file.read(4)
+				color = file.read(4)
+				color2 = file.read(4)
+				vert = Vert()
+				vert.index = j
+				vert.bmv = bm.verts.new(xyz)
+				vert.uv = Vector((u, v))
+				verts.append(vert)
+		
+		numInFile = read_big_int(file)
+		for j in range(numInFile):
+			xyzw = read_vec4(file)
+
+		numIndexes = read_big_int(file)
+		triangle = [None, None, None]
+		for j in range(numIndexes):
+			index = read_big_short(file)
+			triangle[j % 3] = verts[index].bmv
+			if j % 3 == 2:
+				try:
+					face = bm.faces.new(triangle)
+				except ValueError: # some models contain duplicate faces
+					continue
+				face.smooth = True
+
+		for vert in verts:
+			for loop in vert.bmv.link_loops:
+				loop[layer_uv].uv = vert.uv
+				vert.bmv = None
+
+		# flip normals
+		bmesh.ops.reverse_faces(bm, faces=bm.faces[:], flip_multires=False)
+
+		mesh = bpy.data.meshes.new(label)
+		bm.to_mesh(mesh)
+		bm.free()
+
+		mesh.use_auto_smooth = True
+
+		mesh_obj = bpy.data.objects.new(label, mesh)
+		mesh_obj.select = True
+		bpy.context.scene.objects.link(mesh_obj)
+		bpy.context.scene.objects.active = mesh_obj
+
+		# apply texture in Blender Render
+		mat_name = get_doom3_shader_name(shader)
+		mat = (bpy.data.materials.get(mat_name) or
+			   bpy.data.materials.new(mat_name))
+		tex = bpy.data.textures.new(os.path.basename(shader), 'IMAGE')
+		imagefilename = get_image_filename(filepath, shader)
+		if imagefilename:
+			tex.image = bpy.data.images.load(filepath = imagefilename)
+		slot = mat.texture_slots.add()
+		slot.texture = tex
+		# apply texture in 3D View's Texture View
+		slot.uv_layer = "UVMap"
+		for uv_face in mesh.uv_textures.active.data:
+			uv_face.image = tex.image
+		# apply texture in Cycles (Now Blender Render won't work until you turn off Use Node Tree)
+		mat.use_nodes = True
+		nt = mat.node_tree
+		nodes = nt.nodes
+		links = nt.links
+		while(nodes): nodes.remove(nodes[0])
+		output  = nodes.new("ShaderNodeOutputMaterial")
+		diffuse = nodes.new("ShaderNodeBsdfDiffuse")
+		texture = nodes.new("ShaderNodeTexImage")
+		texture.image = tex.image
+		links.new( output.inputs['Surface'], diffuse.outputs['BSDF'])
+		links.new(diffuse.inputs['Color'],   texture.outputs['Color'])
+		# distribute nodes along the x axis
+		for index, node in enumerate((texture, diffuse, output)):
+			node.location.x = 200.0 * index
+		# apply material
+		mesh.materials.append(mat)
+		
+		numInFile = read_big_int(file)
+		print("numInFile =", numInFile, numIndexes)
+		if numInFile > 0:
+			for j in range(numIndexes):
+				silIndex = read_big_short(file)
+		
+		numMirroredVerts = read_big_int(file)
+		for j in range(numMirroredVerts):
+			mirroredVert = read_big_int(file)
+		
+		numDupVerts = read_big_int(file)
+		for j in range(numDupVerts):
+			dupVert1 = read_big_int(file)
+			dupVert2 = read_big_int(file)
+
+		numSilEdges = read_big_int(file)
+		for j in range(numSilEdges):
+			p1 = read_big_short(file)
+			p2 = read_big_short(file)
+			v1 = read_big_short(file)
+			v2 = read_big_short(file)
+			
+		temp = read_bool(file)
+		if temp:
+			for j in range(numVerts):
+				v2 = read_big_short(file)
+				v3 = read_big_short(file)
+				normalizationScale = read_vec3(file)
+		
+		numShadowIndexesNoFrontCaps = read_big_int(file)
+		numShadowIndexesNoCaps = read_big_int(file)
+		shadowCapPlaneBits = read_big_int(file)
+
+		return mesh_obj
+	return
+
 #-------------------------------------------------------------------------------
 # Read bmd5mesh
 #-------------------------------------------------------------------------------
 
 def read_bmd5mesh(filepath):
 	file = open(filepath, 'rb')
+	filename, file_extension = os.path.splitext(os.path.basename(filepath))
 
 	# BRM header
 	magic = read_big_int(file)
 	if magic != 0x42524D6C:
+		if magic == 0x424F0064:
+			return read_bcmodel(file, filepath, 0, magic)
+		elif (0 < magic and magic < 256) or (file_extension.lower() == ".bcm"):
+			return read_bcm(file, filepath, magic)
 		print('\tFatal Error: %d Not a valid binary render model file: %r' % (magic, filepath))
 		file.close()
 		return
 	
 	timeStamp = read_big_int64(file)
+	# there are no "surfaces" in a .bmd5mesh file
+	# other model formats (.base, .blwo, .bflt, .bma) store the meshes as one surface per material
 	numSurfaces = read_big_int(file)
 	for index in range(numSurfaces):
-		id = read_big_int(file)
-		materialName = read_string(file)
-		isGeometry = read_bool(file)
-		if isGeometry:
-			print("unsupported!")
-			file.close()
-			return
+		read_surface(file, filepath, index)
 	bounds0 = read_vec3(file)
 	bounds1 = read_vec3(file)
 	overlaysAdded = read_big_int(file)
 	lastModifiedFrame = read_big_int(file)
 	lastArchivedFrame = read_big_int(file)
 	modelName = read_string(file)
+	print("modelName =", modelName)
 	isStaticWorldModel = read_bool(file)
 	defaulted = read_bool(file)
 	purged = read_bool(file)
@@ -877,12 +1197,15 @@ def read_bmd5mesh(filepath):
 	
 	# Actual MD5 file
 	magic = read_big_int(file)
+	if magic is None:
+		# the file ends here if it's a .base, .blwo, .bflt, or .bma file
+		file.close
+		return
+	
 	if magic != 0x35444D6A:
 		print('\tFatal Error: %d Not a valid bmd5mesh file: %r' % (magic, filepath))
 		file.close()
 		return
-	
-	filename, file_extension = os.path.splitext(os.path.basename(filepath))
 
 	commandline = ""
 	arm_obj, matrices = do_binary_joints(file, filename)

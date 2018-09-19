@@ -17,12 +17,12 @@
 # ##### END GPL LICENSE BLOCK #####
 
 bl_info = {
-	"name": "Id Tech 4 md5mesh, bmd5mesh, and md5anim format",
+	"name": "Id Tech 4 md5mesh, bmd5mesh, md5anim, bcm, bcmodel, blwo, base",
 	"author": "Carl Kenner, pink vertex",
 	"version": (0, 2),
 	"blender": (2, 77, 0),
 	"location": "File -> Import-Export",
-	"description": "Import-Export *.md5mesh, *.bmd5mesh, *.md5anim files",
+	"description": "Import-Export *.md5mesh, *.md5anim, *.bmd5mesh, *.bcm, *.bcmodel, *.base, *.blwo, *.bflt, *.bma",
 	"warning": "",
 	"wiki_url": "https://github.com/CarlKenner/blender_addon_md5",
 	"category": "Import-Export",
@@ -65,15 +65,15 @@ class MD5Preferences(bpy.types.AddonPreferences):
 
 class OT_IMPORT_MESH_md5mesh(bpy.types.Operator, ImportHelper):
 	bl_idname = "import_mesh.md5"
-	bl_label = "Import .md5mesh or .bmd5mesh"
+	bl_label = "Import idTech 4 Mesh"
 	bl_options = {"REGISTER", "UNDO"}
 
 	filename_ext = ".md5mesh"
-	filter_glob = StringProperty(default="*.md5mesh;*.bmd5mesh", options={'HIDDEN'})
+	filter_glob = StringProperty(default="*.md5mesh;*.bmd5mesh;*.bcm;*.bcmodel;*.base;*.blwo;*.bflt;*.bma", options={'HIDDEN'})
 
 	def execute(self, context):
 		root, ext = os.path.splitext(self.filepath)
-		if ext.lower() == ".bmd5mesh":
+		if ext.lower().startswith(".b"):
 			read_bmd5mesh(self.filepath)
 		else:
 			read_md5mesh(self.filepath)

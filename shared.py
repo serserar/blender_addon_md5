@@ -109,7 +109,17 @@ def get_name_to_index_dict(arm_obj):
 def get_doom3_base_folder(localfilename):
 	norm = os.path.normpath(os.path.abspath(localfilename))
 	path = norm.lower().replace("\\", "/")
-	i = path.rfind("/models/md5/")
+	i = path.rfind("/generated/rendermodels/")
+	if i < 0:
+		i = path.rfind("/generated/anim/")
+	if i < 0:
+		i = path.rfind("/generated/models/")
+	if i < 0:
+		i = path.rfind("/generated/collision/")
+	if i < 0:
+		i = path.rfind("/generated/maps/")
+	if i < 0:
+		i = path.rfind("/models/md5/")
 	if i < 0:
 		i = path.rfind("/models/")
 	if i >= 0:
@@ -207,24 +217,39 @@ def read_little_float(file):
 	return result
 
 def read_big_int(file):
-	result = struct.unpack(">i", file.read(4))[0]
-	#print("read_big_int", result)
-	return result
+	b = file.read(4)
+	if len(b) < 4:
+		return None
+	return struct.unpack(">i", b)[0]
 
 def read_big_int64(file):
 	result = struct.unpack(">q", file.read(8))[0]
-	#print("read_big_int64", result)
 	return result
 
 def read_big_float(file):
 	result = struct.unpack(">f", file.read(4))[0]
-	#print("read_big_int", result)
 	return result
 
 def read_big_short(file):
 	result = struct.unpack(">H", file.read(2))[0]
-	#print("read_big_int", result)
 	return result
+
+def F16toF32(x):
+	e = (x & 32767) >> 10
+	m = x & 1023
+	if x & 32768:
+		s = -1
+	else:
+		s = 1
+	
+	if 0 < e and e < 31:
+		return s * pow( 2.0, ( e - 15.0 ) ) * ( 1 + m / 1024.0 )
+	elif m == 0:
+		return s * 0.0
+	return s * pow( 2.0, -14.0 ) * ( m / 1024.0 );
+
+def read_big_half(file):
+	return F16toF32(read_big_short(file))
 
 def read_byte(file):
 	return int(file.read(1)[0])
@@ -237,9 +262,14 @@ def read_vec3(file):
 	result = Vector(struct.unpack("<fff", file.read(3*4)))
 	return result
 
+def read_vec4(file):
+	# Vectors are little-endian, even though individual floats are big-endian!
+	result = Vector(struct.unpack("<ffff", file.read(4*4)))
+	return result
+
 def read_quat(file):
 	result = Quaternion(struct.unpack(">ffff", file.read(4*4)))
-	#print("read_big_int", result)
+	#print("read_quat", result)
 	return result
 
 def read_string(file):
@@ -247,18 +277,4 @@ def read_string(file):
 	result = "".join(map(chr, file.read(length)))
 	#print("read_string", result)
 	return result
-
-def F16toF32(x):
-	e = (x & 32767) >> 10
-	m = x & 1023
-	if x & 32768:
-		s = 1
-	else:
-		s = 0
-	
-	if 0 < e and e < 31:
-		return s * pow( 2.0, ( e - 15.0 ) ) * ( 1 + m / 1024.0 )
-	elif m == 0:
-		return s * 0.0
-	return s * pow( 2.0, -14.0 ) * ( m / 1024.0 );
 
