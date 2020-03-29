@@ -18,9 +18,9 @@
 
 bl_info = {
 	"name": "Id Tech 4 md5mesh, bmd5mesh, md5anim, bcm, bcmodel, blwo, base",
-	"author": "Carl Kenner, pink vertex",
+	"author": "Carl Kenner, pink vertex, serserar",
 	"version": (0, 2),
-	"blender": (2, 77, 0),
+	"blender": (2, 82, 0),
 	"location": "File -> Import-Export",
 	"description": "Import-Export *.md5mesh, *.md5anim, *.bmd5mesh, *.bcm, *.bcmodel, *.base, *.blwo, *.bflt, *.bma",
 	"warning": "",
